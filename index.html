@@ -7867,9 +7867,26 @@ function updateNavBtns(){
 }
 
 
-const SB_URL='https://hseluvpwqjgallfyzori.supabase.co';
-const SB_KEY='sb_publishable_Wa40fMe8dfCEuovfnddCnw__6bd-Qai';
-const SB_TABLE='utm_leads';
+// Los leads ya no se leen ni se tocan desde el navegador con la clave publica:
+// todo pasa por /api/utm del Hub, que comprueba la contrasena del Hub en el servidor.
+var HUB_BASE='https://lathos-hub.vercel.app';
+var HUB_PASS=null;
+try{ HUB_PASS=localStorage.getItem('utm_hub_pass'); }catch(e){}
+async function utmApi(body){
+  for(var intento=0; intento<3; intento++){
+    if(!HUB_PASS){
+      HUB_PASS=prompt('\uD83D\uDD12 Contrase\u00f1a del Hub:');
+      if(HUB_PASS===null) throw new Error('Sin contrase\u00f1a');
+    }
+    var r=await fetch(HUB_BASE+'/api/utm',{method:'POST',headers:{'Content-Type':'application/json','x-hub-pass':HUB_PASS},body:JSON.stringify(body)});
+    if(r.status===401){ HUB_PASS=null; try{ localStorage.removeItem('utm_hub_pass'); }catch(e){} continue; }
+    var j=null; try{ j=await r.json(); }catch(e){}
+    if(!r.ok) throw new Error((j&&j.error)||('HTTP '+r.status));
+    try{ localStorage.setItem('utm_hub_pass',HUB_PASS); }catch(e){}
+    return j||{};
+  }
+  throw new Error('Contrase\u00f1a incorrecta');
+}
 
 var allLeads=[],filteredLeads=[],leadsSearchVal='',utmTab='source';
 var activeFilters={periodo:'todo',desde:'',hasta:'',sourceManual:[],source:[],setter:[],closer:[],estado:[]};
@@ -7903,9 +7920,9 @@ async function loadData(){
   applyFilters();
   // Then try Supabase in background
   try{
-    var res=await fetch(SB_URL+'/rest/v1/'+SB_TABLE+'?select=*&order=fecha_reserva.desc',{headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY}});
-    if(res.ok){
-      var data=await res.json();
+    var out=await utmApi({action:'select'});
+    {
+      var data=out.data;
       if(data&&data.length>0){
         allLeads=data.map(function(r){return{id:r.id,nombre:r.nombre||'',email:r.email||'',fecha:r.fecha_reserva||'',setter:r.setter||'',closer:r.closer||'',estado:r.estado||'',utm_source:r.utm_source||'',utm_campaign:r.utm_campaign||'',utm_content:r.utm_content||'',utm_term:r.utm_term||'',source:r.source||''};});
         var cs=document.getElementById('conn-status');
@@ -8492,15 +8509,11 @@ function saveLead(id){
   }
 
   // Save to Supabase
-  fetch(SB_URL+'/rest/v1/utm_leads?id=eq.'+encodeURIComponent(id), {
-    method: 'PATCH',
-    headers: {'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Content-Type':'application/json','Prefer':'return=minimal'},
-    body: JSON.stringify({
+  utmApi({action:'update', id:id, row:{
       nombre: l.nombre, email: l.email, fecha_reserva: l.fecha,
       setter: l.setter, closer: l.closer, estado: l.estado,
       source: l.source, utm_source: l.utm_source, utm_term: l.utm_term
-    })
-  }).catch(function(){});
+  }}).catch(function(e){ alert('No se pudo guardar el lead: '+e.message); });
 
   // Show a subtle saved indicator
   _pendingRefresh = true;
@@ -8549,10 +8562,7 @@ function deleteLead(id){
   if(row) row.remove();
   document.getElementById('leads-count').textContent = filteredLeads.length + ' leads';
   // Delete from Supabase
-  fetch(SB_URL+'/rest/v1/utm_leads?id=eq.'+encodeURIComponent(id), {
-    method: 'DELETE',
-    headers: {'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Prefer':'return=minimal'}
-  }).catch(function(){});
+  utmApi({action:'delete', id:id}).catch(function(e){ alert('No se pudo borrar el lead: '+e.message); });
 }
 
 function exportLeads(){
@@ -8634,14 +8644,9 @@ function importLeads(event){
         source: l.source, utm_source: l.utm_source, utm_campaign: l.utm_campaign,
         utm_content: l.utm_content, utm_term: l.utm_term
       };});
-      fetch(SB_URL+'/rest/v1/utm_leads?on_conflict=id', {
-        method:'POST',
-        headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},
-        body: JSON.stringify(sbRows)
-      }).then(function(r){
-        if(r.ok){ alert('\u2705 '+imported+' leads importados y guardados en Supabase.'); }
-        else { r.text().then(function(t){ alert('\u2705 '+imported+' leads cargados. Error Supabase: '+t); }); }
-      }).catch(function(){ alert('\u2705 '+imported+' leads cargados localmente.'); });
+      utmApi({action:'upsert', rows:sbRows}).then(function(){
+        alert('\u2705 '+imported+' leads importados y guardados en Supabase.');
+      }).catch(function(e){ alert('\u2705 '+imported+' leads cargados. Error al guardar: '+e.message); });
     } else {
       alert('Importación completada. '+imported+' leads nuevos añadidos.');
     }
@@ -9175,12 +9180,8 @@ async function saveNewLead(){
     utm_term:document.getElementById('nl-term').value.trim()
   };
   try{
-    var res=await fetch(SB_URL+'/rest/v1/'+SB_TABLE,{
-      method:'POST',
-      headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Content-Type':'application/json','Prefer':'return=representation'},
-      body:JSON.stringify({nombre:newLead.nombre,email:newLead.email,fecha_reserva:newLead.fecha,estado:newLead.estado,setter:newLead.setter,closer:newLead.closer,source:newLead.source,utm_source:newLead.utm_source,utm_campaign:'',utm_content:'',utm_term:newLead.utm_term})
-    });
-    if(res.ok){var data=await res.json();if(data&&data[0]&&data[0].id)newLead.id=data[0].id;}
+    var out=await utmApi({action:'insert', row:{nombre:newLead.nombre,email:newLead.email,fecha_reserva:newLead.fecha,estado:newLead.estado,setter:newLead.setter,closer:newLead.closer,source:newLead.source,utm_source:newLead.utm_source,utm_campaign:'',utm_content:'',utm_term:newLead.utm_term}});
+    var data=out.data; if(data&&data[0]&&data[0].id)newLead.id=data[0].id;
   }catch(e){}
   allLeads.unshift(newLead);
   applyFilters();
